@@ -1,0 +1,113 @@
+FROM rockylinux/rockylinux:8.9 AS installer-env
+ 
+ARG CONTAINER_VERSION=0.1.0
+# ARG PS_VERSION=7.4.0
+# ARG PACKAGE_VERSION=7.4.0
+# ARG PS_PACKAGE=powershell-${PACKAGE_VERSION}-1.rh.x86_64.rpm
+# ARG PS_PACKAGE_URL=https://github.com/PowerShell/PowerShell/releases/download/v${PS_VERSION}/${PS_PACKAGE}
+# https://github.com/PowerShell/PowerShell/releases/download/v7.3.4/powershell-7.3.4-1.rh.x86_64.rpm
+# copy required files
+COPY ./files/pip_requirements_${CONTAINER_VERSION}.txt /pip_requirements_${CONTAINER_VERSION}.txt
+COPY ./files/powershell_modules_${CONTAINER_VERSION}.ps1 /powershell_modules_${CONTAINER_VERSION}.ps1
+COPY ./files/Ansible.ModuleUtils.Legacy.psm1 /Ansible.ModuleUtils.Legacy.psm1
+COPY ./files/powershell_generate_links.ps1 /powershell_generate_links.ps1
+
+# Define ENVs for Localization/Globalization
+
+ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false \
+  ##LC_ALL=en_US.UTF-8 \
+  ##LANG=en_US.UTF-8 \
+  # set a fixed location for the Module analysis cache
+  PSModuleAnalysisCachePath=/var/cache/microsoft/powershell/PSModuleAnalysisCache/ModuleAnalysisCache \
+  POWERSHELL_DISTRIBUTION_CHANNEL=PSDocker-CentOS-8
+
+RUN  \
+  #rm -f /etc/yum.repos.d/Rocky-* ; dnf clean all \
+   dnf install -y --nogpgcheck epel-release \
+  && dnf update -y \
+# Install dependencies and clean up
+  && dnf install -y \
+    python3.11.x86_64 \
+    python3.11-pip \
+    less \
+    ncurses \
+    openssh-clients \
+    cpio \
+    git \
+    which \
+    findutils \
+    wget \
+    nmap \
+    openssl \
+    openssl-devel \
+    sshpass \
+    diffutils \
+    expect \
+    rsync \
+    genisoimage \
+    bsdtar \
+    xorriso \
+    mkisofs \
+    tree \
+    isomd5sum \
+    syslinux \
+# installing Powershell 7.3
+# Register the Microsoft RedHat repository
+  && curl -sSL -O https://packages.microsoft.com/config/rhel/8/packages-microsoft-prod.rpm  \
+  && rpm -i packages-microsoft-prod.rpm \
+  && rm packages-microsoft-prod.rpm \
+  && dnf update \
+  # Install PowerShell
+  && dnf install powershell -y \
+  #
+  # Installing PS modules
+  && export POWERSHELL_TELEMETRY_OPTOUT=0 \
+  && echo "Installing powershell modules" \
+  && pwsh -File "/powershell_modules_${CONTAINER_VERSION}.ps1" \
+  && rm -rf /powershell_modules_${CONTAINER_VERSION}.ps1   \
+  # Adding Ansible.ModuleUtils.Legacy.psm1 to $Env:PSModulePath
+  && mkdir -p /root/.local/share/powershell/Modules/Ansible.ModuleUtils.Legacy/ \
+  && mv /Ansible.ModuleUtils.Legacy.psm1 /root/.local/share/powershell/Modules/Ansible.ModuleUtils.Legacy/ \
+  && chmod 755 /root/.local/share/powershell/Modules/Ansible.ModuleUtils.Legacy/Ansible.ModuleUtils.Legacy.psm1 \
+  # Install ansible, other libraries and dependencies
+  && echo "Installing pip3 requirements" \
+  && pip3 install wheel \
+  && pip3 install -r /pip_requirements_${CONTAINER_VERSION}.txt    \
+  && rm -f /pip_requirements_${CONTAINER_VERSION}.txt              \
+  # Install galaxy collections
+  && ansible-galaxy collection install community.vmware \
+  && pip3 install -r /usr/local/lib/python3.11/site-packages/ansible_collections/community/vmware/requirements.txt \
+  && ansible-galaxy collection install vmware.vmware_rest \
+  && ansible-galaxy collection install community.general \
+  && ansible-galaxy collection install dellemc.openmanage \
+  && pip3 install -r /usr/local/lib/python3.11/site-packages/ansible_collections/dellemc/openmanage/requirements.txt \
+  && rm -rf /root/.cache/pip                  \
+  && rm -rf ~/.cache/pip                      \
+  && dnf clean all \
+  # Adding Ansible.ModuleUtils to $Env:PSModulePath
+  && pwsh -File "/powershell_generate_links.ps1" \
+  && rm -rf /powershell_generate_links.ps1   \
+  # Installing Dell iDRACTools
+  ## && cd /tmp ;  wget http://wtc2b1fofs01v.eng.mobilephone.net/DEPLOY/management/Dell/Dell-iDRACTools-Web-LX-11.0.0.0-5139_A00.tar.gz \
+  ## && tar -zxvf Dell-iDRACTools-Web-LX-11.0.0.0-5139_A00.tar.gz \
+  ## && cd iDRACTools/racadm/RHEL8/x86_64/ \
+  ## && /tmp/iDRACTools/racadm/install_racadm.sh \
+  ## && cd / ; rm -rf /tmp/Dell-iDRACTools-Web-LX-11.0.0.0-5139_A00.tar.gz /tmp/iDRACTools \
+  && wget -q -O - https://linux.dell.com/repo/hardware/dsu/bootstrap.cgi | bash >/dev/null 2>&1 \
+  && dnf update -y \
+  && dnf install -y -q srvadmin-idrac.x86_64 >/dev/null 2>&1 \
+  && ln -s /opt/dell/srvadmin/bin/idracadm7 /opt/dell/srvadmin/bin/racadm \
+  && sed -i 's#PATH=$PATH:$HOME/bin#PATH=$PATH:$HOME/bin:/opt/dell/srvadmin/bin/#g' $HOME/.bash_profile \
+  && echo 'export PS1="🐳 \e[0;33minfra:${CONTAINER_VERSION}\e[0m \w # "' >> /root/.bashrc  \
+  # creating /shared directory to mount local $HOME path
+  && mkdir /infra /appl
+
+WORKDIR /infra
+
+# Use PowerShell as the default shell
+# Use array to avoid Docker prepending /bin/sh -c
+
+# CMD [ "pwsh" ]
+
+CMD [ "bash" ]
+
